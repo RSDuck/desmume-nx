@@ -333,8 +333,10 @@ bool CommandLine::parse(int argc,char **argv)
 		case OPT_RTC_DAY: _rtc_day = atoi(optarg); break;
 		case OPT_RTC_HOUR: _rtc_hour = atoi(optarg); break;
 
+#ifdef HAVE_JIT
 		//sync settings
 		case OPT_JIT_SIZE: _jit_size = atoi(optarg); break;
+#endif
 
 		//system equipment
 		case OPT_CONSOLE_TYPE: console_type = optarg; break;

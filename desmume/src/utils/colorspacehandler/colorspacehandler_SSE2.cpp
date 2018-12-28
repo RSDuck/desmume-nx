@@ -22,7 +22,11 @@
 #else
 
 #include <string.h>
+#ifndef __SWITCH__
 #include <emmintrin.h>
+#else
+#include "utils/sse2neon.h"
+#endif
 
 #ifdef ENABLE_SSSE3
 #include <tmmintrin.h>

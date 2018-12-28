@@ -28,7 +28,11 @@
 #include "./utils/colorspacehandler/colorspacehandler.h"
 
 #ifdef ENABLE_SSE2
+#ifndef __SWITCH__
 #include <emmintrin.h>
+#else
+#include "utils/sse2neon.h"
+#endif
 #include "./utils/colorspacehandler/colorspacehandler_SSE2.h"
 #endif
 

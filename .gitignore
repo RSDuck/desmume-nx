@@ -75,3 +75,11 @@ xcuserdata/
 /.cproject
 /config.log
 /.project
+
+*.elf
+*.nacp
+*.nro
+*.nso
+*.pfs0
+
+/.vscode

@@ -44,6 +44,7 @@
 
 #endif //_MSC_VER
 
+#define _reent __reent
 struct _reent {
 	intptr_t _errno;
 };
@@ -56,6 +57,7 @@ typedef uint32_t mode_t;
 #include <sys/types.h>
 #endif
 
+#define DIR_ITER _DIR_ITER
 struct DIR_ITER {
 	void* dirStruct;
 };

@@ -30,7 +30,11 @@
 #endif
 
 #ifdef ENABLE_SSE2
+#ifndef __SWITCH__
 #include <emmintrin.h>
+#else
+#include "utils/sse2neon.h"
+#endif
 #endif
 
 #ifdef ENABLE_SSE4_1
@@ -117,7 +121,7 @@ void MatrixMultiply(s32 (&__restrict mtxA)[16], const s32 (&__restrict mtxB)[16]
 //this isnt as fast as it could be if we used a visual c++ intrinsic, but those appear not to be universally available
 FORCEINLINE u32 u32floor(float f)
 {
-#ifdef ENABLE_SSE2
+#if defined(ENABLE_SSE2) && !defined(__SWITCH__)
 	return (u32)_mm_cvtt_ss2si(_mm_set_ss(f));
 #else
 	return (u32)f;
@@ -125,7 +129,7 @@ FORCEINLINE u32 u32floor(float f)
 }
 FORCEINLINE u32 u32floor(double d)
 {
-#ifdef ENABLE_SSE2
+#if defined(ENABLE_SSE2) && !defined(__SWITCH__)
 	return (u32)_mm_cvttsd_si32(_mm_set_sd(d));
 #else
 	return (u32)d;
@@ -136,7 +140,7 @@ FORCEINLINE u32 u32floor(double d)
 //be sure that the results are the same thing as floorf!
 FORCEINLINE s32 s32floor(float f)
 {
-#ifdef ENABLE_SSE2
+#if defined(ENABLE_SSE2) && !defined(__SWITCH__)
 	return _mm_cvtss_si32( _mm_add_ss(_mm_set_ss(-0.5f),_mm_add_ss(_mm_set_ss(f), _mm_set_ss(f))) ) >> 1;
 #else
 	return (s32)floorf(f);

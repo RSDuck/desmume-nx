@@ -470,6 +470,8 @@ unsigned cpu_features_get_core_amount(void)
    return 1;
 #elif defined(WIIU)
    return 3;
+#elif defined(__SWITCH__)
+   return 4;
 #elif defined(_SC_NPROCESSORS_ONLN)
    /* Linux, most UNIX-likes. */
    long ret = sysconf(_SC_NPROCESSORS_ONLN);

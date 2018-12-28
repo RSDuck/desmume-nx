@@ -48,6 +48,10 @@
 	#define PCAP_DEVICE_NAME name
 #endif
 
+#ifdef __SWITCH__
+#define HOST_WINDOWS
+#endif
+
 #ifndef INVALID_SOCKET
 	#define INVALID_SOCKET  (socket_t)-1
 #endif

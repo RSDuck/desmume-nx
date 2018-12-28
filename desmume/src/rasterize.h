@@ -22,7 +22,11 @@
 #include "gfx3d.h"
 
 #ifdef ENABLE_SSE2
+#ifndef __SWITCH__
 #include <emmintrin.h>
+#else
+#include "utils/sse2neon.h"
+#endif
 #endif
 
 #define SOFTRASTERIZER_MAX_THREADS 32

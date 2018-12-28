@@ -55,7 +55,11 @@
 #endif
 
 #ifdef ENABLE_SSE2
+#ifndef __SWITCH__
 #include <emmintrin.h>
+#else
+#include "utils/sse2neon.h"
+#endif
 #endif
 
 #include "matrix.h"

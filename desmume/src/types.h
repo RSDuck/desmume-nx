@@ -236,7 +236,11 @@ typedef vector signed int v128s32;
 #endif
 
 #ifdef ENABLE_SSE2
+#ifndef __SWITCH__
 #include <emmintrin.h>
+#else
+#include "utils/sse2neon.h"
+#endif
 typedef __m128i v128u8;
 typedef __m128i v128s8;
 typedef __m128i v128u16;

@@ -27,7 +27,7 @@
 
 		#include "frontend/windows/winutil.h"
 		#include "frontend/windows/resource.h"
-#elif !defined(DESMUME_COCOA)
+#elif !defined(DESMUME_COCOA) && !defined(__SWITCH__)
 	#include <glib.h>
 #endif /* HOST_WINDOWS */
 
