@@ -76,7 +76,7 @@ char* menu_FileBrowser()
 		//printf(CONSOLE_ESC(40;0H)"Press (X) to %s Sound\n", UserConfiguration.soundEnabled ? "disable" : " enable");
 		printf("Press Left or Right DPAD to change frameSkip\n");
 		//printf("Current frameSkip value: %u\n", UserConfiguration.frameSkip);
-
+		
 	}
 
 	printf(CONSOLE_ESC(0;0H));

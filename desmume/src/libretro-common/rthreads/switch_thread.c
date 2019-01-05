@@ -84,7 +84,7 @@ static int next_core = 1;
 sthread_t *sthread_create_with_priority(void (*thread_func)(void*), void *userdata, int thread_priority)
 {
    sthread_t* thread = (sthread_t*)malloc(sizeof(sthread_t));
-   if (!R_SUCCEEDED(threadCreate(&thread->id, thread_func, userdata, 1024*1024*4, 0x3B, next_core++ % 2)))
+   if (!R_SUCCEEDED(threadCreate(&thread->id, thread_func, userdata, 1024*1024*4, 0x3B, next_core++ % 3)))
    {
       free(thread);
       return NULL;

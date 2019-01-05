@@ -34,7 +34,11 @@
 #include "./filter/xbrz.h"
 
 #ifdef ENABLE_SSE2
+#ifndef __SWITCH__
 #include <emmintrin.h>
+#else
+#include "utils/sse2neon.h"
+#endif
 #include "./utils/colorspacehandler/colorspacehandler_SSE2.h"
 #endif
 
@@ -1028,6 +1032,7 @@ static Render3D* OpenGLRendererCreate()
 		return NULL;
 	}
 	
+	printf("miau\n");
 	// Get OpenGL info
 	const char *oglVersionString = (const char *)glGetString(GL_VERSION);
 	const char *oglVendorString = (const char *)glGetString(GL_VENDOR);
@@ -1043,6 +1048,8 @@ static Render3D* OpenGLRendererCreate()
 		ENDGL();
 		return newRenderer;
 	}
+
+	printf("miau2\n");
 	
 	// Check the driver's OpenGL version
 	OGLGetDriverVersion(oglVersionString, &_OGLDriverVersion.major, &_OGLDriverVersion.minor, &_OGLDriverVersion.revision);

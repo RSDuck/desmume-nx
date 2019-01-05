@@ -62,7 +62,7 @@ CXXFLAGS	:= $(CFLAGS) -fno-rtti
 ASFLAGS	:=	-g $(ARCH)
 LDFLAGS	=	-specs=$(DEVKITPRO)/libnx/switch.specs -g $(ARCH) -Wl,-Map,$(notdir $*.map)
 
-LIBS	:= -lnx -lz
+LIBS	:= -lEGL -lglapi -ldrm_nouveau -lnx -lz
 
 #---------------------------------------------------------------------------------
 # list of directories containing libraries, this must be the top level containing
@@ -180,7 +180,10 @@ DESMUME_SOURCES := armcpu.cpp \
 	switch/profiler.cpp \
 	utils/arm_arm64/arm_jit.cpp \
 	utils/arm_arm64/emitter/Arm64Emitter.cpp \
-	utils/arm_arm64/emitter/MathUtil.cpp
+	utils/arm_arm64/emitter/MathUtil.cpp \
+	\
+	OGLRender.cpp \
+	OGLRender_3_2.cpp
 
 LIBRETRO_SOURCES := libretro-common/compat/compat_getopt.c \
 	libretro-common/file/file_path.c \
@@ -191,7 +194,9 @@ LIBRETRO_SOURCES := libretro-common/compat/compat_getopt.c \
 	libretro-common/rthreads/async_job.c \
 	libretro-common/rthreads/rsemaphore.c \
 	libretro-common/rthreads/switch_thread.c \
-	libretro-common/encodings/encoding_utf.c
+	libretro-common/encodings/encoding_utf.c \
+	\
+	switch/glad.c # actually not libretro 
 
 CFILES		:= $(notdir $(LIBRETRO_SOURCES))
 CPPFILES	:= $(notdir $(DESMUME_SOURCES))

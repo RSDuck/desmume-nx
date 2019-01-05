@@ -24,7 +24,7 @@
 #include <stdint.h>
 #endif
 
-typedef u32 (FASTCALL* ArmOpCompiled)();
+typedef u32 (FASTCALL* ArmOpCompiled)(u32 cycles, u32 instrs_num);
 
 void arm_jit_reset(bool enable, bool suppress_msg = false);
 void arm_jit_close();

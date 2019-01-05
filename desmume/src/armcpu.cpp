@@ -731,10 +731,10 @@ u32 armcpu_exec()
 {
 	if (jit)
 	{
-		profiler::Section profile("armcpu_exec");
+		//profiler::Section profile("armcpu_exec");
 		ARMPROC.instruct_adr &= ARMPROC.CPSR.bits.T?0xFFFFFFFE:0xFFFFFFFC;
 		ArmOpCompiled f = (ArmOpCompiled)JIT_COMPILED_FUNC(ARMPROC.instruct_adr, PROCNUM);
-		return f ? f() : arm_jit_compile<PROCNUM>();
+		return f ? f(0, 0) : arm_jit_compile<PROCNUM>();
 	}
 
 	return armcpu_exec<PROCNUM>();

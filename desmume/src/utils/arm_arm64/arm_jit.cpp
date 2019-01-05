@@ -140,9 +140,11 @@ static ARM64XEmitter c;
 static libnx::Jit jit_block;
 static u8* jit_rw_addr = nullptr, *jit_rx_addr = nullptr;
 
-static ARM64Reg RCPU = X28;
-static ARM64Reg Rtotal_cycles = W27;
-static ARM64Reg RCPSR = W26;
+static const ARM64Reg RCPU = X28;
+static const ARM64Reg Rtotal_cycles = W27;
+static const ARM64Reg RCPSR = W26;
+
+static u32 constant_branch = 0;
 
 //#define JIT_DEBUG
 #ifdef JIT_DEBUG
@@ -355,32 +357,84 @@ public:
 } regman;
 
 static bool cpsr_dirty = false;
+static u32 nzcv_location = 0; // set bit = stored in native register
+
+#define NZCV_KEPT 1
+#define NZCV_TRASH_ALL (0xfu<<28)
+#define NZCV_NZCV_USEFUL 0
+#define NZCV_NZ_USEFUL (3u<<28)
+
+// set bit = won't contain something useful
+static void update_nzcv(u32 trashed)
+{
+	auto tmp = regman.new_temp();
+	for (u32 i = 0; i < 4; i++)
+	{
+		u32 bit = trashed & (1u << (28 + i));
+		if (nzcv_location & bit)
+		{
+			// we need to retrive it
+			const CCFlags flags[] = {CC_VS, CC_CS, CC_EQ, CC_MI};
+			c.CSET(tmp, flags[i]);
+			c.BFI(RCPSR, tmp, 28 + i, 1);
+		}
+	}
+	regman.free_temp(tmp);
+	nzcv_location = ~trashed;
+}
+
+static FixupBranch branch_on_nzcv(u32 cond, u32 nzcv)
+{
+	const u32 required_bits[] = {BIT(30), BIT(29),
+		(u32)BIT(31), BIT(28), BIT(29)|BIT(30), 
+		(u32)BIT(31)|BIT(28), 0xfu<<28};
+
+	u32 required = required_bits[cond>>1];
+	if ((nzcv & required) == required)
+		return c.B((CCFlags)(cond^1));
+	/* somehow doesn't work :(
+	if (cond < 8) // < 8 means only a single bit
+	{
+		JIT_IMM_PRINT("branched from RCPSR %d %d\n", cond, __builtin_ffs(required));
+		auto tmp = regman.new_temp();
+		c.UBFX(tmp, RCPSR, __builtin_ffs(required) - 1, 1);
+		regman.free_temp(tmp); // the register is still safe until an alloc happens
+		if (cond & 1)
+			return c.CBZ(tmp);
+		else
+			return c.CBNZ(tmp);
+	}*/
+	update_nzcv(NZCV_TRASH_ALL);
+	c._MSR(FIELD_NZCV, EncodeRegTo64(RCPSR));
+	return c.B((CCFlags)(cond^1));
+}
 
 static void load_cpsr()
 {
+	nzcv_location = 0;
 	c.LDR(INDEX_UNSIGNED, RCPSR, RCPU, offsetof(armcpu_t, CPSR.val)); 
 }
 static void save_cpsr()
 {
 	if (cpsr_dirty)
 	{
+		update_nzcv(NZCV_TRASH_ALL);
 		c.STR(INDEX_UNSIGNED, RCPSR, RCPU, offsetof(armcpu_t, CPSR.val));
 		cpsr_dirty = false;
 	}
 }
 
 template<int PROCNUM, int thumb>
-static u32 FASTCALL OP_DECODE()
+static u32 FASTCALL OP_DECODE(u32 cycles, u32 instrs_num)
 {
     auto cpu = &ARMPROC;
-	u32 cycles;
 	u32 adr = cpu->instruct_adr;
 	if(thumb)
 	{
 		cpu->next_instruction = adr + 2;
 		cpu->R[15] = adr + 4;
 		u32 opcode = _MMU_read16<PROCNUM, MMU_AT_CODE>(adr);
-		cycles = thumb_instructions_set[PROCNUM][opcode>>6](opcode);
+		cycles += thumb_instructions_set[PROCNUM][opcode>>6](opcode);
 	}
 	else
 	{
@@ -388,9 +442,9 @@ static u32 FASTCALL OP_DECODE()
 		cpu->R[15] = adr + 8;
 		u32 opcode = _MMU_read32<PROCNUM, MMU_AT_CODE>(adr);
 		if(CONDITION(opcode) == 0xE || TEST_COND(CONDITION(opcode), CODE(opcode), cpu->CPSR))
-			cycles = arm_instructions_set[PROCNUM][INSTRUCTION_INDEX(opcode)](opcode);
+			cycles += arm_instructions_set[PROCNUM][INSTRUCTION_INDEX(opcode)](opcode);
 		else
-			cycles = 1;
+			cycles += 1;
 	}
 	cpu->instruct_adr = cpu->next_instruction;
 	return cycles;
@@ -440,17 +494,28 @@ typedef u32 (*ArmOpCompiler)(u32 pc, u32 instr, u32 ctx);
 */
 
 
-#define ARM_IMPL_BRANCH(branched_code) \
+#define ARM_IMPL_BRANCH(branched_code, nzcv_override) \
 	auto branches = instr_is_conditional(false, instr); \
 	FixupBranch branch; \
+	bool force_retrive_nzcv; \
 	if (branches) \
 	{ \
-		c._MSR(FIELD_NZCV, EncodeRegTo64(RCPSR)); \
-		branch = c.B((CCFlags)(CONDITION(instr)^1)); \
+		u32 prev_nzcv_location = nzcv_location; \
+		force_retrive_nzcv = nzcv_override != 1/* || ~((u32)nzcv_override) != nzcv_location*/; \
+		if (force_retrive_nzcv) \
+			update_nzcv(NZCV_TRASH_ALL); \
+		branch = branch_on_nzcv(CONDITION(instr), prev_nzcv_location); \
 	} \
+	else if (nzcv_override != 1) \
+		update_nzcv(nzcv_override); \
 	branched_code \
 	if (branches) \
 	{ \
+		if (force_retrive_nzcv) \
+		{ \
+			nzcv_location = ~nzcv_override; \
+			update_nzcv(NZCV_TRASH_ALL); \
+		} \
 		if (INSTR_CTX_CYCLES(ctx) > 1) \
 			c.ADD(Rtotal_cycles, Rtotal_cycles, INSTR_CTX_CYCLES(ctx) - 1); \
 		c.SetJumpTarget(branch); \
@@ -629,112 +694,112 @@ typedef u32 (*ArmOpCompiler)(u32 pc, u32 instr, u32 ctx);
 	c.a64inst(rd, op2, rn);
 
 #define ARM_ALU_COPY_NZCV \
-	auto nzcv = regman.new_temp(); \
+	/*auto nzcv = regman.new_temp(); \
 	c.MRS(EncodeRegTo64(nzcv), FIELD_NZCV); \
 	c.UBFX(nzcv, nzcv, 28, 4); \
 	c.BFI(RCPSR, nzcv, 28, 4); \
-	regman.free_temp(nzcv); \
+	regman.free_temp(nzcv);*/ \
 	cpsr_dirty = true;
 
 #define ARM_ALU_TST_RD \
 	c.TST(rd, rd);
 
 #define ARM_ALU_COPY_NZC \
-	auto nzcv = regman.new_temp(); \
+	/*auto nzcv = regman.new_temp(); \
 	c.MRS(EncodeRegTo64(nzcv), FIELD_NZCV); \
 	c.UBFX(nzcv, nzcv, 30, 2); \
 	c.BFI(RCPSR, nzcv, 30, 2); \
+	regman.free_temp(nzcv);*/ \
 	if (copy_c) \
 	{ \
 		c.BFI(RCPSR, rcf, 29, 1); \
 		regman.free_temp(rcf); \
 	} \
-	regman.free_temp(nzcv); \
 	cpsr_dirty = true;
 
-#define ARM_ARITHMETIC_OP(name, preamble, body) \
+#define ARM_ARITHMETIC_OP(name, preamble, body, nzcv_override) \
 	u32 ARM_OP_##name(u32 pc, u32 instr, u32 ctx) \
 	{ \
 		auto rd = regman.get(REG_POS(instr, 12), true); \
 		auto rn = regman.get(REG_POS(instr, 16)); \
 		preamble \
 		if (REG_POS(instr, 12) == 15) return 0; \
-		ARM_IMPL_BRANCH(body) \
+		ARM_IMPL_BRANCH(body, nzcv_override) \
 		return 1; \
 	}
-#define ARM_MOV_OP(name, preamble, body) \
+#define ARM_MOV_OP(name, preamble, body, nzcv_override) \
 	u32 ARM_OP_##name(u32 pc, u32 instr, u32 ctx) \
 	{ \
 		auto rd = regman.get(REG_POS(instr, 12), true); \
 		auto rn = WZR; \
 		preamble \
 		if (REG_POS(instr, 12) == 15) return 0; \
-		ARM_IMPL_BRANCH(body) \
+		ARM_IMPL_BRANCH(body, nzcv_override) \
 		return 1; \
 	}
-#define ARM_CMP_OP(name, preamble, body) \
+#define ARM_CMP_OP(name, preamble, body, nzcv_override) \
 	u32 ARM_OP_##name(u32 pc, u32 instr, u32 ctx) \
 	{ \
 		auto rd = regman.new_temp(); \
 		auto rn = regman.get(REG_POS(instr, 16)); \
 		preamble \
-		ARM_IMPL_BRANCH(body) \
+		ARM_IMPL_BRANCH(body, nzcv_override) \
 		regman.free_temp(rd); \
 		return 1; \
 	}
 
 #define ARM_ALU_IMPL_SIMPLE(fdef, a64inst, name, lsl, lsr, asr, ror, imm_val, shift_reg) \
-	ARM_##fdef##_OP(name##_LSL_IMM, ARM_SHIFT_IMM, ARM_ALU_##lsl(a64inst)) \
-	ARM_##fdef##_OP(name##_LSR_IMM, ARM_SHIFT_IMM, ARM_ALU_##lsr(a64inst)) \
-	ARM_##fdef##_OP(name##_ASR_IMM, ARM_SHIFT_IMM, ARM_ALU_##asr(a64inst)) \
-	ARM_##fdef##_OP(name##_ROR_IMM, ARM_SHIFT_IMM, ARM_ALU_##ror(a64inst)) \
-	ARM_##fdef##_OP(name##_IMM_VAL, ARM_IMM_VAL, ARM_ALU_##imm_val(a64inst)) \
-	ARM_##fdef##_OP(name##_LSL_REG, ARM_SHIFT_REG, ARM_SETUP_SHIFT_REG(ST_LSL) ARM_ALU_##shift_reg(a64inst) regman.free_temp(op2);) \
-	ARM_##fdef##_OP(name##_LSR_REG, ARM_SHIFT_REG, ARM_SETUP_SHIFT_REG(ST_LSR) ARM_ALU_##shift_reg(a64inst) regman.free_temp(op2);) \
-	ARM_##fdef##_OP(name##_ASR_REG, ARM_SHIFT_REG, ARM_SETUP_SHIFT_REG(ST_ASR) ARM_ALU_##shift_reg(a64inst) regman.free_temp(op2);) \
-	ARM_##fdef##_OP(name##_ROR_REG, ARM_SHIFT_REG, ARM_SETUP_SHIFT_REG(ST_ROR) ARM_ALU_##shift_reg(a64inst) regman.free_temp(op2);)
+	ARM_##fdef##_OP(name##_LSL_IMM, ARM_SHIFT_IMM, ARM_ALU_##lsl(a64inst), NZCV_KEPT) \
+	ARM_##fdef##_OP(name##_LSR_IMM, ARM_SHIFT_IMM, ARM_ALU_##lsr(a64inst), NZCV_KEPT) \
+	ARM_##fdef##_OP(name##_ASR_IMM, ARM_SHIFT_IMM, ARM_ALU_##asr(a64inst), NZCV_KEPT) \
+	ARM_##fdef##_OP(name##_ROR_IMM, ARM_SHIFT_IMM, ARM_ALU_##ror(a64inst), NZCV_KEPT) \
+	ARM_##fdef##_OP(name##_IMM_VAL, ARM_IMM_VAL, ARM_ALU_##imm_val(a64inst), NZCV_KEPT) \
+	ARM_##fdef##_OP(name##_LSL_REG, ARM_SHIFT_REG, ARM_SETUP_SHIFT_REG(ST_LSL) ARM_ALU_##shift_reg(a64inst) regman.free_temp(op2);, NZCV_TRASH_ALL) \
+	ARM_##fdef##_OP(name##_LSR_REG, ARM_SHIFT_REG, ARM_SETUP_SHIFT_REG(ST_LSR) ARM_ALU_##shift_reg(a64inst) regman.free_temp(op2);, NZCV_TRASH_ALL) \
+	ARM_##fdef##_OP(name##_ASR_REG, ARM_SHIFT_REG, ARM_SETUP_SHIFT_REG(ST_ASR) ARM_ALU_##shift_reg(a64inst) regman.free_temp(op2);, NZCV_TRASH_ALL) \
+	ARM_##fdef##_OP(name##_ROR_REG, ARM_SHIFT_REG, ARM_SETUP_SHIFT_REG(ST_ROR) ARM_ALU_##shift_reg(a64inst) regman.free_temp(op2);, NZCV_TRASH_ALL)
 
-#define ARM_ALU_IMPL_SIMPLE_S(fdef, a64inst, name, lsl, lsr, asr, ror, imm_val, shift_reg, prepare_flags, prepare_flags_imm, prepare_flags_sreg, copy_flags) \
+#define ARM_ALU_IMPL_SIMPLE_S(fdef, a64inst, name, lsl, lsr, asr, ror, imm_val, shift_reg, prepare_flags, prepare_flags_imm, prepare_flags_sreg, copy_flags, nzcv_override) \
 	ARM_##fdef##_OP(name##_LSL_IMM, ARM_SHIFT_IMM, \
 		prepare_flags(ST_LSL) \
 		ARM_ALU_##lsl(a64inst) \
-		copy_flags) \
+		copy_flags, nzcv_override) \
 	ARM_##fdef##_OP(name##_LSR_IMM, ARM_SHIFT_IMM, \
 		prepare_flags(ST_LSR) \
 		ARM_ALU_##lsr(a64inst) \
-		copy_flags) \
+		copy_flags, nzcv_override) \
 	ARM_##fdef##_OP(name##_ASR_IMM, ARM_SHIFT_IMM, \
 		prepare_flags(ST_ASR) \
 		ARM_ALU_##asr(a64inst) \
-		copy_flags) \
+		copy_flags, nzcv_override) \
 	ARM_##fdef##_OP(name##_ROR_IMM, ARM_SHIFT_IMM, \
 		prepare_flags(ST_ROR) \
 		ARM_ALU_##ror(a64inst) \
-		copy_flags) \
+		copy_flags, nzcv_override) \
 	ARM_##fdef##_OP(name##_IMM_VAL, ARM_IMM_VAL, \
 		prepare_flags_imm(0) \
 		ARM_ALU_##imm_val(a64inst) \
-		copy_flags) \
+		copy_flags, nzcv_override) \
 	ARM_##fdef##_OP(name##_LSL_REG, ARM_SHIFT_REG, \
 		prepare_flags_sreg(ST_LSL) \
 		ARM_ALU_##shift_reg(a64inst) \
 		regman.free_temp(op2); \
-		copy_flags) \
+		copy_flags, nzcv_override) \
 	ARM_##fdef##_OP(name##_LSR_REG, ARM_SHIFT_REG, \
 		prepare_flags_sreg(ST_LSR) \
 		ARM_ALU_##shift_reg(a64inst) \
 		regman.free_temp(op2); \
-		copy_flags) \
+		copy_flags, nzcv_override) \
 	ARM_##fdef##_OP(name##_ASR_REG, ARM_SHIFT_REG, \
 		prepare_flags_sreg(ST_ASR) \
 		ARM_ALU_##shift_reg(a64inst) \
 		regman.free_temp(op2); \
-		copy_flags) \
+		copy_flags, nzcv_override) \
 	ARM_##fdef##_OP(name##_ROR_REG, ARM_SHIFT_REG, \
 		prepare_flags_sreg(ST_ROR) \
 		ARM_ALU_##shift_reg(a64inst) \
 		regman.free_temp(op2); \
-		copy_flags)
+		copy_flags, nzcv_override)
 
 ARM_ALU_IMPL_SIMPLE(ARITHMETIC, AND, AND, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE)
 ARM_ALU_IMPL_SIMPLE(ARITHMETIC, EOR, EOR, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE)
@@ -746,23 +811,23 @@ ARM_ALU_IMPL_SIMPLE(ARITHMETIC, SUB, RSB, LSL_REV, LSR_REV, ASR_REV, ROR_REV, IM
 ARM_ALU_IMPL_SIMPLE(MOV, ORR, MOV, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE)
 ARM_ALU_IMPL_SIMPLE(MOV, ORN, MVN, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_MANUALLY, SHIFT_REG_SIMPLE)
 
-ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, ADDS, ADD_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_MANUALLY, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_NOP, ARM_SETUP_C_NOP, ARM_SETUP_SHIFT_REG, ARM_ALU_COPY_NZCV)
-ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, SUBS, SUB_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_MANUALLY, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_NOP, ARM_SETUP_C_NOP, ARM_SETUP_SHIFT_REG, ARM_ALU_COPY_NZCV)
-ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, SUBS, RSB_S, LSL_REV, LSR_REV, ASR_REV, ROR_REV, IMM_VAL_REV, SHIFT_REG_REV, ARM_SETUP_C_NOP, ARM_SETUP_C_NOP, ARM_SETUP_SHIFT_REG, ARM_ALU_COPY_NZCV)
+ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, ADDS, ADD_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_MANUALLY, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_NOP, ARM_SETUP_C_NOP, ARM_SETUP_SHIFT_REG, ARM_ALU_COPY_NZCV, NZCV_NZCV_USEFUL)
+ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, SUBS, SUB_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_MANUALLY, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_NOP, ARM_SETUP_C_NOP, ARM_SETUP_SHIFT_REG, ARM_ALU_COPY_NZCV, NZCV_NZCV_USEFUL)
+ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, SUBS, RSB_S, LSL_REV, LSR_REV, ASR_REV, ROR_REV, IMM_VAL_REV, SHIFT_REG_REV, ARM_SETUP_C_NOP, ARM_SETUP_C_NOP, ARM_SETUP_SHIFT_REG, ARM_ALU_COPY_NZCV, NZCV_NZCV_USEFUL)
 
-ARM_ALU_IMPL_SIMPLE_S(CMP, SUBS, CMP, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_MANUALLY, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_NOP, ARM_SETUP_C_NOP, ARM_SETUP_SHIFT_REG, ARM_ALU_COPY_NZCV)
-ARM_ALU_IMPL_SIMPLE_S(CMP, ADDS, CMN, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_MANUALLY, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_NOP, ARM_SETUP_C_NOP, ARM_SETUP_SHIFT_REG, ARM_ALU_COPY_NZCV)
+ARM_ALU_IMPL_SIMPLE_S(CMP, SUBS, CMP, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_MANUALLY, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_NOP, ARM_SETUP_C_NOP, ARM_SETUP_SHIFT_REG, ARM_ALU_COPY_NZCV, NZCV_NZCV_USEFUL)
+ARM_ALU_IMPL_SIMPLE_S(CMP, ADDS, CMN, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_MANUALLY, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_NOP, ARM_SETUP_C_NOP, ARM_SETUP_SHIFT_REG, ARM_ALU_COPY_NZCV, NZCV_NZCV_USEFUL)
 
-ARM_ALU_IMPL_SIMPLE_S(CMP, ANDS, TST, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_COPY_NZC)
-ARM_ALU_IMPL_SIMPLE_S(CMP, EOR, TEQ, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC)
+ARM_ALU_IMPL_SIMPLE_S(CMP, ANDS, TST, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_COPY_NZC, NZCV_NZ_USEFUL)
+ARM_ALU_IMPL_SIMPLE_S(CMP, EOR, TEQ, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC, NZCV_NZ_USEFUL)
 
-ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, ANDS, AND_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_COPY_NZC)
-ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, EOR, EOR_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC)
-ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, ORR, ORR_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC)
-ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, BIC, BIC_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_MANUALLY, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC)
+ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, ANDS, AND_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_COPY_NZC, NZCV_NZ_USEFUL)
+ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, EOR, EOR_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC, NZCV_NZ_USEFUL)
+ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, ORR, ORR_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC, NZCV_NZ_USEFUL)
+ARM_ALU_IMPL_SIMPLE_S(ARITHMETIC, BIC, BIC_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_MANUALLY, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC, NZCV_NZ_USEFUL)
 
-ARM_ALU_IMPL_SIMPLE_S(MOV, ORR, MOV_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC)
-ARM_ALU_IMPL_SIMPLE_S(MOV, ORN, MVN_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_MANUALLY, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC)
+ARM_ALU_IMPL_SIMPLE_S(MOV, ORR, MOV_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_SIMPLE, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC, NZCV_NZ_USEFUL)
+ARM_ALU_IMPL_SIMPLE_S(MOV, ORN, MVN_S, LSL_SIMPLE, LSR_SIMPLE, ASR_SIMPLE, ROR_SIMPLE, IMM_VAL_MANUALLY, SHIFT_REG_SIMPLE, ARM_SETUP_C_SHIFT_IMM, ARM_SETUP_C_IMM_VAL, ARM_SETUP_SHIFT_REG_S, ARM_ALU_TST_RD ARM_ALU_COPY_NZC, NZCV_NZ_USEFUL)
 
 #define ARM_ALU_OP_DEF_ALL_NULL(T, D, N, S) \
    static const ArmOpCompiler ARM_OP_##T##_LSL_IMM = nullptr; \
@@ -959,7 +1024,7 @@ static const uintptr_t mem_funcs[12] =
 			c.SUB(Rtotal_cycles, Rtotal_cycles, 1); \
 			regman.free_temp(cycles); \
 			ARM_MEM_MOVXT(rd, W0, size, sign) \
-		) \
+		, NZCV_TRASH_ALL) \
 		return 1; \
 	}
 #define ARM_STR_IMPL(name, preamble, calc_offset, post, writeback, size, sign) \
@@ -981,7 +1046,7 @@ static const uintptr_t mem_funcs[12] =
 			regman.call(mem_funcs[func_idx]); \
 			c.ADD(Rtotal_cycles, Rtotal_cycles, W0); \
 			c.SUB(Rtotal_cycles, Rtotal_cycles, 1); \
-		) \
+		, NZCV_TRASH_ALL) \
 		return 1; \
 	}
 #else
@@ -1121,7 +1186,7 @@ ARM_MEM_HALF_OP_DEF(LDR, LDRSH, 2, 1);
 			} \
 			if (addr != rn) \
 				regman.free_temp(addr); \
-		) \
+		, NZCV_TRASH_ALL) \
 		return 1; \
 	}
 #define ARM_IMPL_STM(name, loop, before, writeback) \
@@ -1161,7 +1226,7 @@ ARM_MEM_HALF_OP_DEF(LDR, LDRSH, 2, 1);
 				c.MOV(rn, addr); \
 			if (addr != rn) \
 				regman.free_temp(addr); \
-		) \
+		, NZCV_TRASH_ALL) \
 		return 1; \
 	}
 
@@ -1201,22 +1266,23 @@ ARM_IMPL_STM(STMDB_W, ARM_LDM_STM_DEC, 1, 1)
 			if (link_cond) \
 				c.MOV(lr, next_instr); \
 			\
-			auto offsetReg = regman.new_temp(); \
-			c.MOVI2R(offsetReg, offset * 4 + (is_bx ? thumb_off : 0)); \
-			c.ADD(r15, r15, offsetReg); \
-			c.ANDI2R(r15, r15, 0xFFFFFFFC|(is_bx<<1), offsetReg); \
+			auto target = (pc + 8 + 4 * offset + (is_bx ? thumb_off : 0))&(0xFFFFFFFC|(is_bx<<1)); \
+			if (!branches) \
+				constant_branch = target; \
+			c.MOVI2R(r15, target); \
 			c.MOV(next_instr, r15); \
 			\
 			if (is_bx) \
 			{ \
+				auto tmp = regman.new_temp(); \
 				JIT_IMM_PRINT("blx imm\n"); \
-				c.MOVZ(offsetReg, 1); \
-				c.BFI(RCPSR, offsetReg, 5, 1); \
+				c.MOVZ(tmp, 1); \
+				c.BFI(RCPSR, tmp, 5, 1); \
+				regman.free_temp(tmp); \
 				cpsr_dirty = true; \
 			} \
 			\
-			regman.free_temp(offsetReg); \
-		) \
+		, NZCV_KEPT) \
 		c.STR(INDEX_UNSIGNED, next_instr, RCPU, offsetof(armcpu_t, next_instruction)); \
 		regman.free_temp(next_instr); \
 		return 1; \
@@ -1247,7 +1313,7 @@ ARM_IMPL_B_BL(BL, true, 2)
 				c.MOV(lr, next_instr); /* lr might be the same register as rn */ \
 			c.MOV(next_instr, r15); \
 			regman.free_temp(mask); \
-		) \
+		, NZCV_KEPT) \
 		c.STR(INDEX_UNSIGNED, next_instr, RCPU, offsetof(armcpu_t, next_instruction)); \
 		regman.free_temp(next_instr); \
 		return 1; \
@@ -1269,34 +1335,18 @@ ARM_IMPL_BX_BLX(BLX_REG, 1)
 #define ARM_OP_LDREX 0
 #define ARM_OP_MSR_CPSR_IMM_VAL 0
 #define ARM_OP_MSR_SPSR_IMM_VAL 0
-//#define ARM_OP_STMDA 0
-//#define ARM_OP_LDMDA 0
-//#define ARM_OP_STMDA_W 0
-//#define ARM_OP_LDMDA_W 0
 #define ARM_OP_STMDA2 0
 #define ARM_OP_LDMDA2 0
 #define ARM_OP_STMDA2_W 0
 #define ARM_OP_LDMDA2_W 0
-//#define ARM_OP_STMIA 0
-//#define ARM_OP_LDMIA 0
-//#define ARM_OP_STMIA_W 0
-//#define ARM_OP_LDMIA_W 0
 #define ARM_OP_STMIA2 0
 #define ARM_OP_LDMIA2 0
 #define ARM_OP_STMIA2_W 0
 #define ARM_OP_LDMIA2_W 0
-//#define ARM_OP_STMDB 0
-//#define ARM_OP_LDMDB 0
-//#define ARM_OP_STMDB_W 0
-//#define ARM_OP_LDMDB_W 0
 #define ARM_OP_STMDB2 0
 #define ARM_OP_LDMDB2 0
 #define ARM_OP_STMDB2_W 0
 #define ARM_OP_LDMDB2_W 0
-//#define ARM_OP_STMIB 0
-//#define ARM_OP_LDMIB 0
-//#define ARM_OP_STMIB_W 0
-//#define ARM_OP_LDMIB_W 0
 #define ARM_OP_STMIB2 0
 #define ARM_OP_LDMIB2 0
 #define ARM_OP_STMIB2_W 0
@@ -1333,11 +1383,11 @@ static const ArmOpCompiler arm_instruction_compilers[4096] = {
 #define THUMB_FLAGS_OP(n,z,c,v) ((((n)&1)<<7)|(((z)&1)<<6)|(((c)&1)<<5)|(((v)&1)<<4))
 
 #define THUMB_COPY_NZ \
-	auto nzcv = regman.new_temp(); \
+	/*auto nzcv = regman.new_temp(); \
 	c.MRS(EncodeRegTo64(nzcv), FIELD_NZCV); \
 	c.UBFX(nzcv, nzcv, 30, 2); \
 	c.BFI(RCPSR, nzcv, 30, 2); \
-	regman.free_temp(nzcv); \
+	regman.free_temp(nzcv);*/ \
 	cpsr_dirty = true;
 
 #define THUMB_IMPL_SHIFT(name, skind, zero) \
@@ -1345,6 +1395,7 @@ static const ArmOpCompiler arm_instruction_compilers[4096] = {
 	/*ArmOpCompiler THUMB_OP_##name = nullptr;*/ \
 	u32 THUMB_OP_##name(u32 pc, u32 instr, u32 ctx) \
 	{ \
+		update_nzcv(NZCV_NZ_USEFUL); \
 		u32 shift = (instr>>6)&0x1f; \
 		auto rd = regman.get(REG_T(instr, 0), true); \
 		auto rm = regman.get(REG_T(instr, 3)); /* actually rs */ \
@@ -1368,6 +1419,7 @@ THUMB_IMPL_SHIFT(ASR_0, ST_ASR, 1)
 	u8 THUMB_FLAGS_OP_##name = THUMB_FLAGS_OP(1,1,1,1); \
 	u32 THUMB_OP_##name(u32 pc, u32 instr, u32 ctx) \
 	{ \
+		update_nzcv(NZCV_NZCV_USEFUL); \
 		auto rd = regman.get(REG_T(instr, 0), true); \
 		auto rs = regman.get(REG_T(instr, 3)); \
 		auto rn = reg?regman.get(REG_T(instr, 6)):WZR; \
@@ -1389,6 +1441,7 @@ THUMB_IMPL_ADDSUB_REGIMM(SUB_IMM3, SUBS, 0)
 	/*ArmOpCompiler THUMB_OP_##name = nullptr;*/ \
 	u32 THUMB_OP_##name(u32 pc, u32 instr, u32 ctx) \
 	{ \
+		update_nzcv(NZCV_NZCV_USEFUL); \
 		auto rd = regman.get(REG_T(instr, 8), !cmp); \
 		c.a64inst(cmp?WZR:rd, rd, instr&0xff); \
 		ARM_ALU_COPY_NZCV \
@@ -1401,6 +1454,7 @@ THUMB_IMPL_ADD_SUB_IMM8(SUB_IMM8, SUBS, 0)
 u8 THUMB_FLAGS_OP_MOV_IMM8 = THUMB_FLAGS_OP(1,1,0,0);
 u32 THUMB_OP_MOV_IMM8(u32 pc, u32 instr, u32 ctx)
 {
+	update_nzcv(NZCV_NZ_USEFUL);
 	auto rd = regman.get(REG_T(instr, 8), true);
 	c.MOVI2R(rd, instr&0xff);
 	c.TST(rd,rd);
@@ -1418,6 +1472,7 @@ u32 THUMB_OP_MOV_IMM8(u32 pc, u32 instr, u32 ctx)
 	/*ArmOpCompiler THUMB_OP_##name = nullptr;*/ \
 	u32 THUMB_OP_##name(u32 pc, u32 instr, u32 ctx) \
 	{ \
+		update_nzcv(NZCV_NZ_USEFUL); \
 		auto rd = regman.get(REG_T(instr,0),true); \
 		auto rs = regman.get(REG_T(instr,3)); \
 		c.a64inst(rd, rd, rs); \
@@ -1434,6 +1489,7 @@ THUMB_OP_LOGIC(BIC, BIC, ARM_ALU_TST_RD THUMB_COPY_NZ)
 	/*ArmOpCompiler THUMB_OP_##name = nullptr;*/ \
 	u32 THUMB_OP_##name(u32 pc, u32 instr, u32 ctx) \
 	{ \
+		update_nzcv(NZCV_NZ_USEFUL); \
 		auto rm = regman.get(REG_T(instr,0),true); /* actually rd */ \
 		auto rs = regman.get(REG_T(instr,3)); \
 		ARM_SETUP_SHIFT_REG_S(skind) \
@@ -1447,24 +1503,26 @@ THUMB_OP_SHIFT_REG(LSR_REG,ST_LSR)
 THUMB_OP_SHIFT_REG(ASR_REG,ST_ASR)
 THUMB_OP_SHIFT_REG(ROR_REG,ST_ROR)
 
-#define THUMB_IMPL_ALU(name, a64inst,compare, copy_flags, flags) \
+#define THUMB_IMPL_ALU(name, a64inst,compare, copy_flags, flags, arithmetic) \
 	u8 THUMB_FLAGS_OP_##name = flags; \
 	/*ArmOpCompiler THUMB_OP_##name = nullptr;*/ \
 	u32 THUMB_OP_##name(u32 pc, u32 instr, u32 ctx) \
 	{ \
+		update_nzcv(arithmetic ? NZCV_NZCV_USEFUL : NZCV_NZ_USEFUL); \
 		auto rd = regman.get(REG_T(instr,0),!compare); \
 		auto rs = regman.get(REG_T(instr,3)); \
 		c.a64inst(rd, rs); \
 		copy_flags \
 		return 1; \
 	}
-THUMB_IMPL_ALU(TST, TST, 1, THUMB_COPY_NZ, THUMB_FLAGS_OP(1,1,0,0))
-THUMB_IMPL_ALU(CMP, CMP, 1, ARM_ALU_COPY_NZCV, THUMB_FLAGS_OP(1,1,1,1))
-THUMB_IMPL_ALU(CMN, CMN, 1, ARM_ALU_COPY_NZCV, THUMB_FLAGS_OP(1,1,1,1))
-THUMB_IMPL_ALU(MVN, MVN, 0, ARM_ALU_TST_RD THUMB_COPY_NZ, THUMB_FLAGS_OP(1,1,0,0))
+THUMB_IMPL_ALU(TST, TST, 1, THUMB_COPY_NZ, THUMB_FLAGS_OP(1,1,0,0), 0)
+THUMB_IMPL_ALU(CMP, CMP, 1, ARM_ALU_COPY_NZCV, THUMB_FLAGS_OP(1,1,1,1), 1)
+THUMB_IMPL_ALU(CMN, CMN, 1, ARM_ALU_COPY_NZCV, THUMB_FLAGS_OP(1,1,1,1), 1)
+THUMB_IMPL_ALU(MVN, MVN, 0, ARM_ALU_TST_RD THUMB_COPY_NZ, THUMB_FLAGS_OP(1,1,0,0), 0)
 u8 THUMB_FLAGS_OP_NEG = THUMB_FLAGS_OP(1,1,1,1);
 u32 THUMB_OP_NEG(u32 pc, u32 instr, u32 ctx) 
 {
+	update_nzcv(NZCV_NZCV_USEFUL);
 	auto rd = regman.get(REG_T(instr,0),true);
 	auto rs = regman.get(REG_T(instr,3));
 	c.SUBS(rd, WZR, rs);
@@ -1504,12 +1562,14 @@ u32 THUMB_OP_NEG(u32 pc, u32 instr, u32 ctx)
 	/*ArmOpCompiler THUMB_OP_##name = nullptr;*/ \
 	u32 THUMB_OP_##name(u32 pc, u32 instr, u32 ctx) \
 	{ \
+		update_nzcv(NZCV_TRASH_ALL); \
 		calc_addr \
 		ARM_MEM_F_IDX(0, size) \
 		regman.call(mem_funcs[func_idx]); \
 		auto cycles = regman.new_temp(); \
 		c.UBFX(EncodeRegTo64(cycles), X0, 32, 32); \
 		c.ADD(Rtotal_cycles, Rtotal_cycles, cycles); \
+		c.SUB(Rtotal_cycles, Rtotal_cycles, 1); \
 		regman.free_temp(cycles); \
 		ARM_MEM_MOVXT(rd, W0, size, sign) \
 		return 1; \
@@ -1519,11 +1579,13 @@ u32 THUMB_OP_NEG(u32 pc, u32 instr, u32 ctx)
 	u8 THUMB_FLAGS_OP_##name = THUMB_FLAGS_OP(0,0,0,0); \
 	u32 THUMB_OP_##name(u32 pc, u32 instr, u32 ctx) \
 	{ \
+		update_nzcv(NZCV_TRASH_ALL); \
 		calc_addr \
 		ARM_MEM_MOVXT(W1, rd, size, sign) \
 		ARM_MEM_F_IDX(1, size) \
 		regman.call(mem_funcs[func_idx]); \
 		c.ADD(Rtotal_cycles, Rtotal_cycles, W0); \
+		c.SUB(Rtotal_cycles, Rtotal_cycles, 1); \
 		return 1; \
 	}
 
@@ -1559,9 +1621,10 @@ u32 THUMB_OP_B_UNCOND(u32 pc, u32 instr, u32 ctx)
 {
 	auto r15 = regman.get(15, true);
 	auto offset = SIGNEEXT_IMM11(instr) * 2;
-	c.MOVI2R(r15, pc + 4 + offset);
+	constant_branch = pc + 4 + offset;
+	c.MOVI2R(r15, constant_branch);
 	c.STR(INDEX_UNSIGNED, r15, RCPU, offsetof(armcpu_t, next_instruction));
-	return 1;	
+	return 1;
 }
 
 u8 THUMB_FLAGS_OP_B_COND = THUMB_FLAGS_OP(0,0,0,0);
@@ -1574,8 +1637,8 @@ u32 THUMB_OP_B_COND(u32 pc, u32 instr, u32 ctx)
 	c.MOVI2R(next_instr, pc + 2);
 	c.ADD(r15, next_instr, 2);
 
-	c._MSR(FIELD_NZCV, EncodeRegTo64(RCPSR));
-	auto __skip = c.B((CCFlags)(((instr>>8)&0xf)^1));
+	/*c._MSR(FIELD_NZCV, EncodeRegTo64(RCPSR));*/
+	auto __skip = /*c.B((CCFlags)(((instr>>8)&0xf)^1))*/branch_on_nzcv((instr>>8)&0xf, nzcv_location);
 
 	if (offset < 0)
 		c.SUB(next_instr, r15, (u32)(-offset) * 2);
@@ -1592,7 +1655,6 @@ u32 THUMB_OP_B_COND(u32 pc, u32 instr, u32 ctx)
 }
 
 #define THUMB_OP_BL_LONG nullptr
-
 #define THUMB_FLAGS_OP_BL_LONG THUMB_FLAGS_OP_DONTKNOW
 
 #define THUMB_OP_SPE nullptr
@@ -1638,12 +1700,33 @@ THUMB_IMPL_STR(STR_IMM_OFF,THUMB_STR_IMM_OFF c.ADD(W0,rb,imm_unscaled*4);,4,0)
 THUMB_IMPL_LDRB(LDRSB_REG_OFF,THUMB_LDR_REG_OFF c.ADD(W0,rb,ro);,1,1)
 THUMB_IMPL_LDRB(LDRSH_REG_OFF,THUMB_LDR_REG_OFF c.ADD(W0,rb,ro);,2,1)
 
+#define SIGNEXTEND_11(i) (((s32)i<<21)>>21)
+
+u32 THUMB_OP_BL_10(u32 pc, u32 instr, u32 ctx)
+{
+	auto r14 = regman.get(14, true);
+	constant_branch = pc + 4 + (SIGNEXTEND_11(instr)<<12);
+	c.MOVI2R(r14, constant_branch);
+	return 1;
+}
+
+u32 THUMB_OP_BL_11(u32 pc, u32 instr, u32 ctx)
+{
+	auto r15 = regman.get(15, true);
+	auto r14 = regman.get(14, true);
+	constant_branch += (instr&0x7FF)<<1;
+	c.MOVI2R(r15, constant_branch);
+	c.MOVI2R(r14, (pc + 2) | 1);
+	c.STR(INDEX_UNSIGNED, r15, RCPU, offsetof(armcpu_t, next_instruction));
+	return 1;
+}
+
 #define THUMB_OP_BX_BLX_THUMB nullptr
 #define THUMB_OP_BL_LONG nullptr
 #define THUMB_OP_BX_THUMB        THUMB_OP_BX_BLX_THUMB
 #define THUMB_OP_BLX_THUMB       THUMB_OP_BX_BLX_THUMB
-#define THUMB_OP_BL_10           THUMB_OP_BL_LONG
-#define THUMB_OP_BL_11           THUMB_OP_BL_LONG
+//#define THUMB_OP_BL_10           THUMB_OP_BL_LONG
+//#define THUMB_OP_BL_11           THUMB_OP_BL_LONG
 #define THUMB_OP_BLX             THUMB_OP_BL_LONG
 
 #define THUMB_FLAGS_OP_BX_THUMB        THUMB_FLAGS_OP_DONTKNOW
@@ -1820,9 +1903,13 @@ static void cmp_regs(armcpu_t* cpu, u32 opcode)
 extern bool jit_second_run;
 #endif
 
+#include "switch/profiler.h"
+
 template<int PROCNUM>
 static ArmOpCompiled compile_basicblock()
 {
+	//profiler::Section profiler("JIT compilation");
+
     auto base_addr = ARMPROC.instruct_adr;
     auto thumb = ARMPROC.CPSR.bits.T;
     auto opcode_size = thumb ? 2 : 4;
@@ -1830,6 +1917,8 @@ static ArmOpCompiled compile_basicblock()
 	u32 constant_cycles = 0;
 	u32 opcode = 0;
 	u32 addr = base_addr;
+
+	constant_branch = 0;
 
     if (!JIT_MAPPED(base_addr & 0x0FFFFFFF, PROCNUM))
 	{
@@ -1843,17 +1932,18 @@ static ArmOpCompiled compile_basicblock()
     auto f = (ArmOpCompiled)(c.GetCodePtr() - jit_rw_addr + jit_rx_addr);
     JIT_COMPILED_FUNC(base_addr, PROCNUM) = (uintptr_t)f;
 
-	BitSet32 stashed_regs({30, (int)DecodeReg(RCPU), (int)RCPSR, (int)Rtotal_cycles, 19, 20, 21, 22, 23, 24, 25});
+	BitSet32 stashed_regs({1, 30, (int)DecodeReg(RCPU), (int)RCPSR, (int)Rtotal_cycles, 19, 20, 21, 22, 23, 24, 25});
     c.ABI_PushRegisters(stashed_regs);
 
 	c.MOVP2R(RCPU, &ARMPROC);
-	c.MOVZ(Rtotal_cycles, 0);
+	c.MOVZ(Rtotal_cycles, W0);
 
     regman.reset();
     load_cpsr();
 
 	JIT_IMM_PRINT("load block thumb %d\n", thumb);
 
+	u32 instrs_count = 0;
     for (u32 last_instr = false, i = 0; !last_instr; i++)
     {
 		addr = base_addr + opcode_size * i;
@@ -1864,7 +1954,9 @@ static ArmOpCompiled compile_basicblock()
 
 		auto cycles = instr_cycles<PROCNUM>(thumb, opcode);
 
-		last_instr = instr_is_branch(thumb, opcode) || i + 1 == CommonSettings.jit_max_block_size;
+		last_instr = (instr_is_branch(thumb, opcode) || i + 1 >= CommonSettings.jit_max_block_size) &&
+			!(instr_attributes(thumb, opcode) & MERGE_NEXT);
+		instrs_count = i + 1;
 
 		auto compiler = thumb ? thumb_instruction_compilers[opcode>>6] : 
 			arm_instruction_compilers[INSTRUCTION_INDEX(opcode)];
@@ -1959,7 +2051,19 @@ static ArmOpCompiled compile_basicblock()
 	JIT_IMM_PRINT("%d\n", constant_cycles);
 	c.ADD(W0, Rtotal_cycles, constant_cycles);
     c.ABI_PopRegisters(stashed_regs);
-    c.RET();
+
+	if (constant_branch != 0)
+	{
+		c.CMP(W1, CommonSettings.jit_max_block_size);
+		c.B(CC_GE);
+		c.ADD(W1, W1, instrs_count);
+
+		c.MOVP2R(X4, &JIT_COMPILED_FUNC(constant_branch, PROCNUM));
+		c.LDR(INDEX_UNSIGNED, X5, X4, 0);
+		c.CMP(X5, 0);
+		c.B(CC_NEQ);
+	}
+	c.RET();
 
     libnx::jitTransitionToExecutable(&jit_block);
 
@@ -1974,7 +2078,7 @@ template<int PROCNUM> u32 arm_jit_compile()
 	{
 		ArmOpCompiled f = op_decode[PROCNUM][ARMPROC.CPSR.bits.T];
 		JIT_COMPILED_FUNC(addr, PROCNUM) = (uintptr_t)f;
-		return f();
+		return f(0, 0);
 	}
 	recompile_counts[mask_addr >> 1] += 1 << 4*(mask_addr & 1);
 	
@@ -1984,7 +2088,7 @@ template<int PROCNUM> u32 arm_jit_compile()
 	}
 
     auto f = compile_basicblock<PROCNUM>();
-	u32 cycles = f ? f() : 0;
+	u32 cycles = f ? f(0, 0) : 0;
     return cycles;
 }
 

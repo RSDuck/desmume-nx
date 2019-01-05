@@ -38,6 +38,12 @@
 	#define OGLEXT(procPtr, func)
 	#define INITOGLEXT(procPtr, func)
 	#define EXTERNOGLEXT(procPtr, func)
+#elif defined(__SWITCH__)
+	#include "switch/glad.h"
+
+	#define OGLEXT(procPtr, func)
+	#define INITOGLEXT(procPtr, func)
+	#define EXTERNOGLEXT(procPtr, func)
 #else
 	#include <GL/gl.h>
 	#include <GL/glext.h>

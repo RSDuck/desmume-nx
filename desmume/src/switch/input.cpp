@@ -68,7 +68,7 @@ void update_keypad(u16 keys)
   NDS_endProcessingInput();
 }
 
-libNX::HidControllerKeys keymap[] = {libNX::KEY_A, libNX::KEY_B, libNX::KEY_MINUS, libNX::KEY_PLUS, libNX::KEY_DRIGHT, libNX::KEY_DLEFT, libNX::KEY_DUP, libNX::KEY_DOWN, libNX::KEY_R, libNX::KEY_L, libNX::KEY_X, libNX::KEY_Y };
+libNX::HidControllerKeys keymap[] = {libNX::KEY_A, libNX::KEY_B, libNX::KEY_MINUS, libNX::KEY_PLUS, libNX::KEY_RIGHT, libNX::KEY_LEFT, libNX::KEY_UP, libNX::KEY_DOWN, libNX::KEY_R, libNX::KEY_L, libNX::KEY_X, libNX::KEY_Y };
 
 /* Manage input events */
 int process_ctrls_events( u16 *keypad, u32 kDown, u32 kUp )
