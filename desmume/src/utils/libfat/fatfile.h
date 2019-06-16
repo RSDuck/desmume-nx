@@ -72,31 +72,31 @@ struct _FILE_STRUCT {
 
 typedef struct _FILE_STRUCT FILE_STRUCT;
 
-intptr_t _FAT_open_r (struct _reent *r, void *fileStruct, const char *path, int flags, int mode);
+intptr_t _FAT_open_r (struct __reent *r, void *fileStruct, const char *path, int flags, int mode);
 
-intptr_t _FAT_close_r (struct _reent *r, intptr_t fd);
+intptr_t _FAT_close_r (struct __reent *r, intptr_t fd);
 
-ssize_t _FAT_write_r (struct _reent *r,intptr_t fd, const char *ptr, size_t len);
+ssize_t _FAT_write_r (struct __reent *r,intptr_t fd, const char *ptr, size_t len);
 
-ssize_t _FAT_read_r (struct _reent *r, intptr_t fd, char *ptr, size_t len);
+ssize_t _FAT_read_r (struct __reent *r, intptr_t fd, char *ptr, size_t len);
 
-off_t _FAT_seek_r (struct _reent *r, intptr_t fd, off_t pos, int dir);
+off_t _FAT_seek_r (struct __reent *r, intptr_t fd, off_t pos, int dir);
 
-int _FAT_fstat_r (struct _reent *r, intptr_t fd, struct stat *st);
+int _FAT_fstat_r (struct __reent *r, intptr_t fd, struct stat *st);
 
-int _FAT_stat_r (struct _reent *r, const char *path, struct stat *st);
+int _FAT_stat_r (struct __reent *r, const char *path, struct stat *st);
 
-int _FAT_link_r (struct _reent *r, const char *existing, const char *newLink);
+int _FAT_link_r (struct __reent *r, const char *existing, const char *newLink);
 
-int _FAT_unlink_r (struct _reent *r, const char *name);
+int _FAT_unlink_r (struct __reent *r, const char *name);
 
-int _FAT_chdir_r (struct _reent *r, const char *name);
+int _FAT_chdir_r (struct __reent *r, const char *name);
 
-int _FAT_rename_r (struct _reent *r, const char *oldName, const char *newName);
+int _FAT_rename_r (struct __reent *r, const char *oldName, const char *newName);
 
-int _FAT_ftruncate_r (struct _reent *r, intptr_t fd, off_t len);
+int _FAT_ftruncate_r (struct __reent *r, intptr_t fd, off_t len);
 
-int _FAT_fsync_r (struct _reent *r, intptr_t fd);
+int _FAT_fsync_r (struct __reent *r, intptr_t fd);
 
 /*
 Synchronizes the file data to disc.

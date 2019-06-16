@@ -48,7 +48,7 @@
 #include "lock.h"
 
 
-int _FAT_stat_r (struct _reent *r, const char *path, struct stat *st) {
+int _FAT_stat_r (struct __reent *r, const char *path, struct stat *st) {
 	PARTITION* partition = NULL;
 	DIR_ENTRY dirEntry;
 	
@@ -84,12 +84,12 @@ int _FAT_stat_r (struct _reent *r, const char *path, struct stat *st) {
 	return 0;
 }
 
-int _FAT_link_r (struct _reent *r, const char *existing, const char *newLink) {
+int _FAT_link_r (struct __reent *r, const char *existing, const char *newLink) {
 	r->_errno = ENOTSUP;
 	return -1;
 }
 
-int _FAT_unlink_r (struct _reent *r, const char *path) {
+int _FAT_unlink_r (struct __reent *r, const char *path) {
 	PARTITION* partition = NULL;
 	DIR_ENTRY dirEntry;
 	DIR_ENTRY dirContents;
@@ -174,7 +174,7 @@ int _FAT_unlink_r (struct _reent *r, const char *path) {
 	}
 }
 
-int _FAT_chdir_r (struct _reent *r, const char *path) {
+int _FAT_chdir_r (struct __reent *r, const char *path) {
 	PARTITION* partition = NULL;
 	
 	// Get the partition this directory is on
@@ -208,7 +208,7 @@ int _FAT_chdir_r (struct _reent *r, const char *path) {
 	}
 }
 
-int _FAT_rename_r (struct _reent *r, const char *oldName, const char *newName) {
+int _FAT_rename_r (struct __reent *r, const char *oldName, const char *newName) {
 	PARTITION* partition = NULL;
 	DIR_ENTRY oldDirEntry;
 	DIR_ENTRY newDirEntry;
@@ -322,7 +322,7 @@ int _FAT_rename_r (struct _reent *r, const char *oldName, const char *newName) {
 	return 0;
 }
 
-int _FAT_mkdir_r (struct _reent *r, const char *path, int mode) {
+int _FAT_mkdir_r (struct __reent *r, const char *path, int mode) {
 	PARTITION* partition = NULL;
 	bool fileExists;
 	DIR_ENTRY dirEntry;
@@ -454,7 +454,7 @@ int _FAT_mkdir_r (struct _reent *r, const char *path, int mode) {
 	return 0;
 }
 //
-//int _FAT_statvfs_r (struct _reent *r, const char *path, struct statvfs *buf) 
+//int _FAT_statvfs_r (struct __reent *r, const char *path, struct statvfs *buf) 
 //{
 //	PARTITION* partition = NULL;
 //	unsigned int freeClusterCount;
@@ -496,7 +496,7 @@ int _FAT_mkdir_r (struct _reent *r, const char *path, int mode) {
 //	return 0;
 //}
 
-DIR_ITER* _FAT_diropen_r(struct _reent *r, DIR_ITER *dirState, const char *path) {
+DIR_ITER* _FAT_diropen_r(struct __reent *r, DIR_ITER *dirState, const char *path) {
 	DIR_ENTRY dirEntry;
 	DIR_STATE_STRUCT* state = (DIR_STATE_STRUCT*) (dirState->dirStruct);
 	bool fileExists;
@@ -547,7 +547,7 @@ DIR_ITER* _FAT_diropen_r(struct _reent *r, DIR_ITER *dirState, const char *path)
 	return (DIR_ITER*) state;
 }
 
-int _FAT_dirreset_r (struct _reent *r, DIR_ITER *dirState) {
+int _FAT_dirreset_r (struct __reent *r, DIR_ITER *dirState) {
 	DIR_STATE_STRUCT* state = (DIR_STATE_STRUCT*) (dirState->dirStruct);
 
 	_FAT_lock(&state->partition->lock);
@@ -567,7 +567,7 @@ int _FAT_dirreset_r (struct _reent *r, DIR_ITER *dirState) {
 	return 0;
 }
 
-int _FAT_dirnext_r (struct _reent *r, DIR_ITER *dirState, char *filename, struct stat *filestat) {
+int _FAT_dirnext_r (struct __reent *r, DIR_ITER *dirState, char *filename, struct stat *filestat) {
 	DIR_STATE_STRUCT* state = (DIR_STATE_STRUCT*) (dirState->dirStruct);
 
 	_FAT_lock(&state->partition->lock);
@@ -601,7 +601,7 @@ int _FAT_dirnext_r (struct _reent *r, DIR_ITER *dirState, char *filename, struct
 	return 0;
 }
 
-int _FAT_dirclose_r (struct _reent *r, DIR_ITER *dirState) {
+int _FAT_dirclose_r (struct __reent *r, DIR_ITER *dirState) {
 	DIR_STATE_STRUCT* state = (DIR_STATE_STRUCT*) (dirState->dirStruct);
 	
 	// We are no longer using this entry

@@ -47,7 +47,7 @@
 #include "filetime.h"
 #include "lock.h"
 
-intptr_t _FAT_open_r (struct _reent *r, void *fileStruct, const char *path, int flags, int mode) {
+intptr_t _FAT_open_r (struct __reent *r, void *fileStruct, const char *path, int flags, int mode) {
 	PARTITION* partition = NULL;
 	bool fileExists;
 	DIR_ENTRY dirEntry;
@@ -304,7 +304,7 @@ int _FAT_syncToDisc (FILE_STRUCT* file) {
 }
 
 
-intptr_t _FAT_close_r (struct _reent *r, intptr_t fd) {
+intptr_t _FAT_close_r (struct __reent *r, intptr_t fd) {
 	FILE_STRUCT* file = (FILE_STRUCT*)  fd;
 	intptr_t ret = 0;
 
@@ -341,7 +341,7 @@ intptr_t _FAT_close_r (struct _reent *r, intptr_t fd) {
 	return ret;
 }
 
-ssize_t _FAT_read_r (struct _reent *r, intptr_t fd, char *ptr, size_t len) {
+ssize_t _FAT_read_r (struct __reent *r, intptr_t fd, char *ptr, size_t len) {
 	FILE_STRUCT* file = (FILE_STRUCT*)  fd;
 	PARTITION* partition;
 	CACHE* cache;
@@ -517,7 +517,7 @@ ssize_t _FAT_read_r (struct _reent *r, intptr_t fd, char *ptr, size_t len) {
 // then get next cluster or allocate next cluster
 // this solves the over-allocation problems when file size is aligned to cluster size
 // return true on succes, false on error
-static bool _FAT_check_position_for_next_cluster(struct _reent *r,
+static bool _FAT_check_position_for_next_cluster(struct __reent *r,
 		FILE_POSITION *position, PARTITION* partition, size_t remain, bool *flagNoError)
 {
 	uint32_t tempNextCluster;
@@ -553,7 +553,7 @@ err:
 /*
 Extend a file so that the size is the same as the rwPosition
 */
-static bool _FAT_file_extend_r (struct _reent *r, FILE_STRUCT* file) {
+static bool _FAT_file_extend_r (struct __reent *r, FILE_STRUCT* file) {
 	PARTITION* partition = file->partition;
 	CACHE* cache = file->partition->cache;
 	FILE_POSITION position;
@@ -634,7 +634,7 @@ static bool _FAT_file_extend_r (struct _reent *r, FILE_STRUCT* file) {
 	return true;
 }
 
-ssize_t _FAT_write_r (struct _reent *r, intptr_t fd, const char *ptr, size_t len) {
+ssize_t _FAT_write_r (struct __reent *r, intptr_t fd, const char *ptr, size_t len) {
 	FILE_STRUCT* file = (FILE_STRUCT*)  fd;
 	PARTITION* partition;
 	CACHE* cache;
@@ -862,7 +862,7 @@ ssize_t _FAT_write_r (struct _reent *r, intptr_t fd, const char *ptr, size_t len
 }
 
 
-off_t _FAT_seek_r (struct _reent *r, intptr_t fd, off_t pos, int dir) {
+off_t _FAT_seek_r (struct __reent *r, intptr_t fd, off_t pos, int dir) {
 	FILE_STRUCT* file = (FILE_STRUCT*)  fd;
 	PARTITION* partition;
 	uint32_t cluster, nextCluster;
@@ -964,7 +964,7 @@ off_t _FAT_seek_r (struct _reent *r, intptr_t fd, off_t pos, int dir) {
 
 
 
-int _FAT_fstat_r (struct _reent *r, intptr_t fd, struct stat *st) {
+int _FAT_fstat_r (struct __reent *r, intptr_t fd, struct stat *st) {
 	FILE_STRUCT* file = (FILE_STRUCT*)  fd;
 	PARTITION* partition;
 	DIR_ENTRY fileEntry;
@@ -999,7 +999,7 @@ int _FAT_fstat_r (struct _reent *r, intptr_t fd, struct stat *st) {
 	return 0;
 }
 
-int _FAT_ftruncate_r (struct _reent *r, intptr_t fd, off_t len) {
+int _FAT_ftruncate_r (struct __reent *r, intptr_t fd, off_t len) {
 	FILE_STRUCT* file = (FILE_STRUCT*)  fd;
 	PARTITION* partition;
 	int ret=0;
@@ -1111,7 +1111,7 @@ int _FAT_ftruncate_r (struct _reent *r, intptr_t fd, off_t len) {
 	return ret;
 }
 
-int _FAT_fsync_r (struct _reent *r, intptr_t fd) {
+int _FAT_fsync_r (struct __reent *r, intptr_t fd) {
 	FILE_STRUCT* file = (FILE_STRUCT*)  fd;
 	int ret = 0;
 

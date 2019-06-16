@@ -44,8 +44,7 @@
 
 #endif //_MSC_VER
 
-#define _reent __reent
-struct _reent {
+struct __reent {
 	intptr_t _errno;
 };
 
@@ -62,43 +61,43 @@ struct DIR_ITER {
 	void* dirStruct;
 };
 
-struct devoptab_t {
+struct _devoptab_t {
 	const char *name;
 	int	structSize;
-	intptr_t (*open_r)(struct _reent *r, void *fileStruct, const char *path, int flags, int mode);
-	intptr_t (*close_r)(struct _reent *r, intptr_t fd);
-	ssize_t (*write_r)(struct _reent *r, intptr_t fd, const char *ptr, size_t len);
-	ssize_t (*read_r)(struct _reent *r, intptr_t fd, char *ptr, size_t len);
-	off_t (*seek_r)(struct _reent *r, intptr_t fd, off_t pos, int dir);
-	int (*fstat_r)(struct _reent *r, intptr_t fd, struct stat *st);
-	int (*stat_r)(struct _reent *r, const char *file, struct stat *st);
-	int (*link_r)(struct _reent *r, const char *existing, const char  *newLink);
-	int (*unlink_r)(struct _reent *r, const char *name);
-	int (*chdir_r)(struct _reent *r, const char *name);
-	int (*rename_r) (struct _reent *r, const char *oldName, const char *newName);
-	int (*mkdir_r) (struct _reent *r, const char *path, int mode);
+	intptr_t (*open_r)(struct __reent *r, void *fileStruct, const char *path, int flags, int mode);
+	intptr_t (*close_r)(struct __reent *r, intptr_t fd);
+	ssize_t (*write_r)(struct __reent *r, intptr_t fd, const char *ptr, size_t len);
+	ssize_t (*read_r)(struct __reent *r, intptr_t fd, char *ptr, size_t len);
+	off_t (*seek_r)(struct __reent *r, intptr_t fd, off_t pos, int dir);
+	int (*fstat_r)(struct __reent *r, intptr_t fd, struct stat *st);
+	int (*stat_r)(struct __reent *r, const char *file, struct stat *st);
+	int (*link_r)(struct __reent *r, const char *existing, const char  *newLink);
+	int (*unlink_r)(struct __reent *r, const char *name);
+	int (*chdir_r)(struct __reent *r, const char *name);
+	int (*rename_r) (struct __reent *r, const char *oldName, const char *newName);
+	int (*mkdir_r) (struct __reent *r, const char *path, int mode);
 		
 	int dirStateSize;
 	
-	DIR_ITER* (*diropen_r)(struct _reent *r, DIR_ITER *dirState, const char *path);
-	int (*dirreset_r)(struct _reent *r, DIR_ITER *dirState);
-	int (*dirnext_r)(struct _reent *r, DIR_ITER *dirState, char *filename, struct stat *filestat);
-	int (*dirclose_r)(struct _reent *r, DIR_ITER *dirState);
+	DIR_ITER* (*diropen_r)(struct __reent *r, DIR_ITER *dirState, const char *path);
+	int (*dirreset_r)(struct __reent *r, DIR_ITER *dirState);
+	int (*dirnext_r)(struct __reent *r, DIR_ITER *dirState, char *filename, struct stat *filestat);
+	int (*dirclose_r)(struct __reent *r, DIR_ITER *dirState);
 	#ifndef LIBFAT_PC
-	int (*statvfs_r)(struct _reent *r, const char *path, struct statvfs *buf);
+	int (*statvfs_r)(struct __reent *r, const char *path, struct statvfs *buf);
 	#endif
-	int (*ftruncate_r)(struct _reent *r, intptr_t fd, off_t len);
-	int (*fsync_r)(struct _reent *r, intptr_t fd);
+	int (*ftruncate_r)(struct __reent *r, intptr_t fd, off_t len);
+	int (*fsync_r)(struct __reent *r, intptr_t fd);
 
 	void *deviceData;
 
-	int (*chmod_r)(struct _reent *r, const char *path, mode_t mode);
-	int (*fchmod_r)(struct _reent *r, int fd, mode_t mode);
+	int (*chmod_r)(struct __reent *r, const char *path, mode_t mode);
+	int (*fchmod_r)(struct __reent *r, int fd, mode_t mode);
 
 };
 
 
-devoptab_t* GetDeviceOpTab(const char* name);
+_devoptab_t* _GetDeviceOpTab(const char* name);
 
 #define _ATTR_WEAK_ 
 

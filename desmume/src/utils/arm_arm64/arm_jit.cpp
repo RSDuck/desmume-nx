@@ -138,7 +138,8 @@ static u8 recompile_counts[(1<<26)/16];
 
 static ARM64XEmitter c;
 static libnx::Jit jit_block;
-static u8* jit_rw_addr = nullptr, *jit_rx_addr = nullptr;
+u8* desmume_rx_jit = nullptr;
+u8* desmume_rw_jit = nullptr;
 
 static const ARM64Reg RCPU = X28;
 static const ARM64Reg Rtotal_cycles = W27;
@@ -425,16 +426,17 @@ static void save_cpsr()
 }
 
 template<int PROCNUM, int thumb>
-static u32 FASTCALL OP_DECODE(u32 cycles, u32 instrs_num)
+static u32 FASTCALL OP_DECODE()
 {
     auto cpu = &ARMPROC;
 	u32 adr = cpu->instruct_adr;
+	u32 cycles;
 	if(thumb)
 	{
 		cpu->next_instruction = adr + 2;
 		cpu->R[15] = adr + 4;
 		u32 opcode = _MMU_read16<PROCNUM, MMU_AT_CODE>(adr);
-		cycles += thumb_instructions_set[PROCNUM][opcode>>6](opcode);
+		cycles = thumb_instructions_set[PROCNUM][opcode>>6](opcode);
 	}
 	else
 	{
@@ -442,9 +444,9 @@ static u32 FASTCALL OP_DECODE(u32 cycles, u32 instrs_num)
 		cpu->R[15] = adr + 8;
 		u32 opcode = _MMU_read32<PROCNUM, MMU_AT_CODE>(adr);
 		if(CONDITION(opcode) == 0xE || TEST_COND(CONDITION(opcode), CODE(opcode), cpu->CPSR))
-			cycles += arm_instructions_set[PROCNUM][INSTRUCTION_INDEX(opcode)](opcode);
+			cycles = arm_instructions_set[PROCNUM][INSTRUCTION_INDEX(opcode)](opcode);
 		else
-			cycles += 1;
+			cycles = 1;
 	}
 	cpu->instruct_adr = cpu->next_instruction;
 	return cycles;
@@ -1927,16 +1929,14 @@ static ArmOpCompiled compile_basicblock()
 		return nullptr;
 	}
 
-    libnx::jitTransitionToWritable(&jit_block);
-
-    auto f = (ArmOpCompiled)(c.GetCodePtr() - jit_rw_addr + jit_rx_addr);
+    auto f = (ArmOpCompiled)c.GetCodePtr();
     JIT_COMPILED_FUNC(base_addr, PROCNUM) = (uintptr_t)f;
 
-	BitSet32 stashed_regs({1, 30, (int)DecodeReg(RCPU), (int)RCPSR, (int)Rtotal_cycles, 19, 20, 21, 22, 23, 24, 25});
+	BitSet32 stashed_regs({30, (int)DecodeReg(RCPU), (int)RCPSR, (int)Rtotal_cycles, 19, 20, 21, 22, 23, 24, 25});
     c.ABI_PushRegisters(stashed_regs);
 
 	c.MOVP2R(RCPU, &ARMPROC);
-	c.MOVZ(Rtotal_cycles, W0);
+	c.MOV(Rtotal_cycles, WZR);
 
     regman.reset();
     load_cpsr();
@@ -2051,21 +2051,9 @@ static ArmOpCompiled compile_basicblock()
 	JIT_IMM_PRINT("%d\n", constant_cycles);
 	c.ADD(W0, Rtotal_cycles, constant_cycles);
     c.ABI_PopRegisters(stashed_regs);
-
-	if (constant_branch != 0)
-	{
-		c.CMP(W1, CommonSettings.jit_max_block_size);
-		c.B(CC_GE);
-		c.ADD(W1, W1, instrs_count);
-
-		c.MOVP2R(X4, &JIT_COMPILED_FUNC(constant_branch, PROCNUM));
-		c.LDR(INDEX_UNSIGNED, X5, X4, 0);
-		c.CMP(X5, 0);
-		c.B(CC_NEQ);
-	}
 	c.RET();
 
-    libnx::jitTransitionToExecutable(&jit_block);
+	c.FlushIcacheSection((u8*)f, c.GetWritableCodePtr());
 
     return f;
 }
@@ -2073,22 +2061,22 @@ static ArmOpCompiled compile_basicblock()
 template<int PROCNUM> u32 arm_jit_compile()
 {
     u32 addr = ARMPROC.instruct_adr;
-	u32 mask_addr = (addr & 0x07FFFFFE) >> 4;
+	u32 mask_addr = (addr & 0x07FFFFFE) >> 4;/*
 	if(((recompile_counts[mask_addr >> 1] >> 4*(mask_addr & 1)) & 0xF) > 8)
 	{
 		ArmOpCompiled f = op_decode[PROCNUM][ARMPROC.CPSR.bits.T];
 		JIT_COMPILED_FUNC(addr, PROCNUM) = (uintptr_t)f;
-		return f(0, 0);
+		return f();
 	}
-	recompile_counts[mask_addr >> 1] += 1 << 4*(mask_addr & 1);
+	recompile_counts[mask_addr >> 1] += 1 << 4*(mask_addr & 1);*/
 	
-	if((JIT_BLOCK_SIZE - (c.GetCodePtr() - jit_rw_addr)) / 4 < 1000) {
+	if((JIT_BLOCK_SIZE - (c.GetCodePtr() - desmume_rx_jit)) / 4 < 1000) {
 		printf("JIT block full resetting...\n");
 		arm_jit_reset(true);
 	}
 
     auto f = compile_basicblock<PROCNUM>();
-	u32 cycles = f ? f(0, 0) : 0;
+	u32 cycles = f ? f() : 0;
     return cycles;
 }
 
@@ -2131,13 +2119,13 @@ void arm_jit_reset(bool enable, bool suppress_msg)
 			}
 #endif
 
-        if (jit_rx_addr == nullptr)
+        if (desmume_rx_jit == nullptr)
         {
             libnx::jitCreate(&jit_block, JIT_BLOCK_SIZE);
-            jit_rw_addr = (u8*)libnx::jitGetRwAddr(&jit_block);
-			jit_rx_addr = (u8*)libnx::jitGetRxAddr(&jit_block);
+			desmume_rx_jit = (u8*)libnx::jitGetRxAddr(&jit_block);
+			desmume_rw_jit = (u8*)libnx::jitGetRwAddr(&jit_block);
         }
-        c.SetCodePtr(jit_rw_addr);
+        c.SetCodePtr(desmume_rx_jit);
 
 #ifdef JIT_DEBUG
 		if (results == nullptr)
@@ -2148,7 +2136,7 @@ void arm_jit_reset(bool enable, bool suppress_msg)
 
 void arm_jit_close()
 {
-    if (jit_rx_addr != nullptr)
+    if (desmume_rx_jit != nullptr)
         libnx::jitClose(&jit_block);
 
 #ifdef JIT_DEBUG

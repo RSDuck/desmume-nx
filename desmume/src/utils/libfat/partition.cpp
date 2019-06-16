@@ -298,9 +298,9 @@ void _FAT_partition_destructor (PARTITION* partition) {
 }
 
 PARTITION* _FAT_partition_getPartitionFromPath (const char* path) {
-	const devoptab_t *devops;
+	const _devoptab_t *devops;
 
-	devops = GetDeviceOpTab (path);
+	devops = _GetDeviceOpTab (path);
 
 	if (!devops) {
 		return NULL;

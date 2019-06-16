@@ -12,7 +12,7 @@ struct Instance
 {
 	void* buffer;
 	int size_bytes;
-	devoptab_t* devops;
+	_devoptab_t* devops;
 };
 
 Instance sInstance;
@@ -71,7 +71,7 @@ DISC_INTERFACE_STRUCT discio = {
 
 //not declared in any libfat headers...?
 bool fatMountSimple (const char* name, const DISC_INTERFACE* interface);
-void fatUnmountDirect (devoptab_t *devops);
+void fatUnmountDirect (_devoptab_t *devops);
 
 namespace LIBFAT
 {
@@ -81,7 +81,7 @@ namespace LIBFAT
 		gInstance->buffer = buffer;
 		gInstance->size_bytes = size_bytes;
 		fatMountSimple("fat",&discio);
-		gInstance->devops = GetDeviceOpTab(NULL);
+		gInstance->devops = _GetDeviceOpTab(NULL);
 		
 
 		int zzz=9;
@@ -89,13 +89,13 @@ namespace LIBFAT
 
 	bool MkDir(const char *path)
 	{
-		_reent r;
+		__reent r;
 		return gInstance->devops->mkdir_r(&r,path,0) == 0;
 	}
 
 	bool WriteFile(const char *path, const void* data, int len)
 	{
-		_reent r;
+		__reent r;
 		FILE_STRUCT file;
 		intptr_t fd = gInstance->devops->open_r(&r,&file,path,O_CREAT | O_RDWR,0);
 		if(fd != -1)
